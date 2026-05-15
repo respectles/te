@@ -513,4 +513,322 @@ def process_admin_decisions(call):
         return
         
     parts = call.data.split("_")
-    action = parts[1] # ap
+    action = parts[1] # approve / reject
+    tx_id = int(parts[2])
+    
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, amount, status FROM transactions WHERE tx_id = ?", (tx_id,))
+    tx = cursor.fetchone()
+    
+    if not tx:
+        bot.answer_callback_query(call.id, "❌ تراکنش یافت نشد")
+        conn.close()
+        return
+        
+    target_user_id, amount, status = tx
+    if status != 'pending':
+        bot.answer_callback_query(call.id, "⚠️ این فیش قبلاً تعیین تکلیف شده است.")
+        conn.close()
+        return
+        
+    if action == "approve":
+        # بروزرسانی تراکنش به تایید شده
+        cursor.execute("UPDATE transactions SET status = 'approved' WHERE tx_id = ?", (tx_id,))
+        # شارژ کیف پول کاربر
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, target_user_id))
+        conn.commit()
+        conn.close()
+        
+        bot.answer_callback_query(call.id, "✅ پرداخت تایید شد")
+        bot.send_message(OWNER_ID, f"✅ تراکنش #{tx_id} تایید شد و کیف پول کاربر شارژ گردید.")
+        
+        # اطلاع رسانی به کاربر
+        bot.send_message(
+            target_user_id,
+            f"🎉 شارژ حساب کاربری شما تایید شد!\n"
+            f"مبلغ {amount:,} تومان به موجودی حساب شما اضافه شد."
+        )
+    else:
+        # رد تراکنش
+        cursor.execute("UPDATE transactions SET status = 'rejected' WHERE tx_id = ?", (tx_id,))
+        conn.commit()
+        conn.close()
+        
+        bot.answer_callback_query(call.id, "❌ پرداخت رد شد")
+        bot.send_message(OWNER_ID, f"❌ تراکنش #{tx_id} رد گردید.")
+        
+        # اطلاع رسانی به کاربر
+        bot.send_message(
+            target_user_id,
+            "❌ درخواست شارژ حساب شما رد شد. در صورت داشتن سوال با پشتیبانی در ارتباط باشید."
+        )
+
+# ==================== کانفیگ‌های کاربر و تمدید ====================
+@bot.message_handler(func=lambda message: message.text == "🛡 کانفیگ‌های من")
+def show_my_configs(message):
+    user_id = message.from_user.id
+    if check_user_status(user_id) == "banned": return
+    
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT config_type, config_code, price, purchase_date FROM purchased_configs WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        bot.send_message(user_id, "🔍 شما هنوز هیچ کانفیگی از این ربات تهیه نکرده‌اید.")
+        return
+        
+    res = "🛡 <b>کانفیگ‌های فعال شما:</b>\n\n"
+    for idx, row in enumerate(rows, 1):
+        res += (
+            f"📦 کانفیگ شماره {idx} [<b>{row[0].upper()}</b>]\n"
+            f"💵 قیمت: {row[2]:,} تومان | تاریخ: {row[3]}\n"
+            f"<pre>{row[1]}</pre>\n"
+            f"-------------------------\n"
+        )
+        
+    markup = types.InlineKeyboardMarkup()
+    btn_renew = types.InlineKeyboardButton("🔄 درخواست تمدید کانفیگ", callback_data="request_renewal")
+    markup.add(btn_renew)
+    
+    bot.send_message(user_id, res, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "request_renewal")
+def request_renewal(call):
+    user_id = call.from_user.id
+    bot.answer_callback_query(call.id, "درخواست تمدید برای ادمین ارسال شد ✅")
+    
+    # ارسال پیام تمدید به ادمین اصلی
+
+bot.send_message(
+        OWNER_ID,
+        f"🔄 <b>درخواست تمدید کانفیگ</b>\n"
+        f"کاربر @{call.from_user.username or 'بدون_نام'} با شناسه عددی {user_id} درخواست تمدید کانفیگ دارد. "
+        f"لطفاً بررسی کرده و کانفیگ جدید را برای کاربر بفرستید."
+    )
+    bot.send_message(user_id, "✅ درخواست تمدید برای مدیریت ارسال شد. ادمین پس از بررسی کانفیگ جدید را به شما تحویل می‌دهد.")
+
+# ==================== ارتباط با پشتیبانی تلگرام ====================
+@bot.message_handler(func=lambda message: message.text == "📞 پشتیبانی")
+def get_support_details(message):
+    user_id = message.from_user.id
+    if check_user_status(user_id) == "banned": return
+    
+    msg = bot.send_message(
+        user_id,
+        f"👤 <b>پشتیبانی رسمی ربات:</b>\n\n"
+        f"آیدی پشتیبان: {SUPPORT_ID}\n\n"
+        f"همچنین می‌توانید پیام خود را به صورت مستقیم در قالب یک پیام متنی ارسال کنید تا ربات آن را به ادمین برساند."
+    )
+    bot.register_next_step_handler(msg, forward_to_admin)
+
+def forward_to_admin(message):
+    user_id = message.from_user.id
+    if message.text == "⬅️ برگشت" or message.text in ["🛍 خرید کانفیگ", "💳 کیف پول من", "🛡 کانفیگ‌های من", "📞 پشتیبانی"]:
+        return
+        
+    bot.send_message(OWNER_ID, f"✉️ <b>پیام دریافتی از کاربر {user_id}:</b>\n\n{message.text}")
+    bot.send_message(user_id, "✅ پیام شما به پشتیبانی ارسال شد. به زودی پاسخ شما داده خواهد شد.")
+
+# ==================== پنل مدیریت فوق پیشرفته ادمین ====================
+@bot.message_handler(commands=['panel'])
+@bot.message_handler(regexp="پنل")
+@bot.message_handler(func=lambda message: message.text == "⚙️ ورود به پنل مدیریت")
+def admin_panel_main(message):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    
+    if not user or user["role"] not in ["owner", "admin"]:
+        bot.send_message(user_id, "⛔️ شما مجاز به استفاده از این بخش نیستید.")
+        return
+        
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    
+    # گزینه‌های پنل
+    btn_card = types.InlineKeyboardButton("💳 تغییر شماره کارت", callback_data="admin_set_card")
+    btn_prices = types.InlineKeyboardButton("💰 تغییر قیمت پنل‌ها", callback_data="admin_change_prices")
+    btn_ch = types.InlineKeyboardButton("🔒 قفل عضویت کانال", callback_data="admin_channel_lock")
+    btn_admins = types.InlineKeyboardButton("👥 مدیریت ادمین‌ها", callback_data="admin_manage_staff")
+    btn_discount = types.InlineKeyboardButton("🎟 ثبت کد تخفیف", callback_data="admin_create_discount")
+    btn_repo = types.InlineKeyboardButton("📦 وضعیت مخازن کانفیگ", callback_data="admin_repo_status")
+    
+    markup.add(btn_card, btn_prices)
+    markup.add(btn_ch, btn_admins)
+    markup.add(btn_discount, btn_repo)
+    
+    bot.send_message(
+        user_id,
+        f"⚙️ <b>پنل مدیریت ربات فروش کانفیگ</b>\n\n"
+        f"سطح دسترسی شما: <b>{user['role'].upper()}</b>\n"
+        f"برای تغییر پارامترهای ربات یکی از گزینه‌های زیر را لمس کنید:",
+        reply_markup=markup
+    )
+
+# تغییر شماره کارت ادمین
+@bot.callback_query_handler(func=lambda call: call.data == "admin_set_card")
+def admin_set_card_start(call):
+    user_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+    
+    current_card = get_setting("card_number")
+    current_owner = get_setting("card_owner")
+    
+    msg = bot.send_message(
+        user_id,
+        f"💳 <b>تنظیم شماره کارت جدید</b>\n\n"
+        f"شماره کارت فعلی: {current_card}\n"
+        f"صاحب کارت فعلی: {current_owner}\n\n"
+        f"لطفاً شماره کارت ۱۶ رقمی جدید را بدون فاصله ارسال کنید:"
+    )
+    bot.register_next_step_handler(msg, admin_save_card)
+
+def admin_save_card(message):
+    user_id = message.from_user.id
+    card = message.text.replace("-", "").replace(" ", "")
+    
+    if len(card) != 16 or not card.isdigit():
+        bot.send_message(user_id, "❌ شماره کارت باید دقیقا ۱۶ رقم و فقط شامل عدد باشد. عملیات لغو شد.")
+
+return
+        
+    # اضافه کردن خط تیره هر ۴ رقم برای زیبایی و خوانایی
+    formatted_card = f"{card[0:4]}-{card[4:8]}-{card[8:12]}-{card[12:16]}"
+    set_setting("card_number", formatted_card)
+    
+    msg = bot.send_message(user_id, "✅ شماره کارت ثبت شد. حالا نام صاحب کارت را ارسال نمایید:")
+    bot.register_next_step_handler(msg, admin_save_card_owner)
+
+def admin_save_card_owner(message):
+    user_id = message.from_user.id
+    owner = message.text.strip()
+    set_setting("card_owner", owner)
+    
+    bot.send_message(user_id, f"✅ تغییرات ذخیره شد.\n💳 کارت: {get_setting('card_number')}\n👤 صاحب کارت: {owner}")
+
+# بن و آنبن کردن کاربران
+@bot.message_handler(commands=['ban'])
+def ban_user_cmd(message):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    if not user or user["role"] not in ["owner", "admin"]: return
+    
+    parts = message.text.split(" ")
+    if len(parts) < 2:
+        bot.send_message(user_id, "⚠️ لطفاً آیدی عددی کاربر را بعد از دستور وارد کنید.\nمثال: <pre>/ban 12345678</pre>")
+        return
+        
+    target_id = int(parts[1])
+    
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET status = 'banned' WHERE user_id = ?", (target_id,))
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(user_id, f"✅ کاربر با شناسه {target_id} با موفقیت مسدود شد.")
+
+@bot.message_handler(commands=['unban'])
+def unban_user_cmd(message):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    if not user or user["role"] not in ["owner", "admin"]: return
+    
+    parts = message.text.split(" ")
+    if len(parts) < 2:
+        bot.send_message(user_id, "⚠️ لطفاً آیدی عددی کاربر را بعد از دستور وارد کنید.\nمثال: <pre>/unban 12345678</pre>")
+        return
+        
+    target_id = int(parts[1])
+    
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET status = 'active' WHERE user_id = ?", (target_id,))
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(user_id, f"✅ کاربر با شناسه {target_id} رفع مسدودیت شد.")
+
+# افزودن یا حذف ادمین‌ها
+@bot.message_handler(commands=['addadmin'])
+def add_admin_cmd(message):
+    user_id = message.from_user.id
+    # فقط ادمین اصلی (Owner) اجازه مدیریت ادمین‌ها را دارد
+    user = get_user(user_id)
+    if not user or user["role"] != "owner": return
+    
+    parts = message.text.split(" ")
+    if len(parts) < 2:
+        bot.send_message(user_id, "⚠️ آیدی عددی کاربر جدید را بعد از دستور وارد کنید.\nمثال: /addadmin 12345678")
+        return
+        
+    target_id = int(parts[1])
+    
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO users (user_id, username, role, status) VALUES (?, ?, 'admin', 'active')", 
+                   (target_id, "Admin_Added"))
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(user_id, f"✅ کاربر با شناسه {target_id} با موفقیت به عنوان ادمین کامل منصوب گردید.")
+
+@bot.message_handler(commands=['deladmin'])
+def del_admin_cmd(message):
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    if not user or user["role"] != "owner": return
+    
+    parts = message.text.split(" ")
+    if len(parts) < 2:
+        bot.send_message(user_id, "⚠️ آیدی ادمین را وارد کنید.\nمثال: /deladmin 12345678")
+        return
+        
+    target_id = int(parts[1])
+    
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET role = 'user' WHERE user_id = ? AND role != 'owner'", (target_id,))
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(user_id, f"✅ کاربر {target_id} از مقام ادمینی عزل شد.")
+
+# تغییر قیمت ها
+@bot.callback_query_handler(func=lambda call: call.data == "admin_change_prices")
+def admin_change_prices_start(call):
+    user_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+    
+    msg = bot.send_message(user_id, "💰 لطفاً قیمت جدید پنل اقتصادی را به تومان ارسال کنید:")
+    bot.register_next_step_handler(msg, save_price_economic)
+
+def save_price_economic(message):
+    user_id = message.from_user.id
+    try:
+        price = int(message.text)
+        set_setting("price_economic", price)
+        msg = bot.send_message(user_id, "💰 حالا قیمت جدید پنل VIP را به تومان بفرستید:")
+        bot.register_next_step_handler(msg, save_price_vip)
+    except:
+        bot.send_message(user_id, "❌ نامعتبر. عملیات لغو شد.")
+
+def save_price_vip(message):
+    user_id = message.from_user.id
+    try:
+        price = int(message.text)
+        set_setting("price_vip", price)
+        bot.send_message(
+            user_id, 
+            f"✅ قیمت‌ها با موفقیت ویرایش شدند!\n"
+            f"اقتصادی: {int(get_setting('price_economic')):,} تومان\n"
+            f"وی‌آی‌پی: {int(get_setting('price_vip')):,} تومان"
+        )
+    except:
+        bot.send_message(user_id, "❌ نامعتبر. عملیات لغو شد.")
+
+# ==================== اجرای ربات ====================
+if name == "main":
+    print("Bot is starting...")
+    bot.infinity_polling()
