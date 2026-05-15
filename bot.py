@@ -137,7 +137,7 @@ def handle_admin_panel(message):
         types.InlineKeyboardButton("بن / آن بن کاربر", callback_data="adm_ban"),
         types.InlineKeyboardButton("تعداد کل کاربران", callback_data="adm_count")
     )
-    bot.send_message(message.chat.id, "⚙️ **پنل مدیریت مالک ربات:**\n\nاز منوی شیشه‌ای زیر اقدام کنید:", reply_markup=markup)
+    bot.send_message(message.chat.id, "⚙️ پنل مدیریت مالک ربات:**\n\nاز منوی شیشه‌ای زیر اقدام کنید:", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: True)
 def text_reply_handler(message):
@@ -174,12 +174,12 @@ def text_reply_handler(message):
             types.InlineKeyboardButton(f"⭐️ خرید پلن اقتصادی ({eco_p:,} تومان)", callback_data="buy_from_stock_eco"),
             types.InlineKeyboardButton(f"⚡️ خرید پلن VIP ({vip_p:,} تومان)", callback_data="buy_from_stock_vip")
         )
-        bot.send_message(chat_id, "🛒 **یکی از دسته‌بندی‌ها را انتخاب کنید:**", reply_markup=markup)
+        bot.send_message(chat_id, "🛒 **یکی از دسته‌بندی‌ها را انتخاب کنید:", reply_markup=markup)
         
     elif text == "💰 شارژ کیف پول":
         card_num = get_db_setting('card_number')
         card_hlr = get_db_setting('card_holder')
-        bot.send_message(chat_id, f"💳 **شماره کارت جهت کارت به کارت:**\n\n`{card_num}`\n👤 صاحب کارت: **{card_hlr}**\n\n📌 پس از انتقال، رسید پرداخت را ارسال فرمایید.")
+        bot.send_message(chat_id, f"💳 شماره کارت جهت کارت به کارت:**\n\n`{card_num}`\n👤 صاحب کارت: {card_hlr}\n\n📌 پس از انتقال، رسید پرداخت را ارسال فرمایید.")
         
     elif text == "💰 موجودی کیف پول":
         with db_lock:
@@ -191,7 +191,7 @@ def text_reply_handler(message):
         
         bal = row[0] if row else 0
         bgt = row[1] if row else 0
-        bot.send_message(chat_id, f"💰 **موجودی حساب شما:**\n💵 اعتبار: **{bal:,}** تومان\n🛍 تعداد خرید: **{bgt}** عدد")
+        bot.send_message(chat_id, f"💰 **موجودی حساب شما:**\n💵 اعتبار: {bal:,} تومان\n🛍 تعداد خرید: {bgt}** عدد")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
@@ -268,7 +268,7 @@ def callback_handler(call):
         bot.send_message(chat_id, success_text, parse_mode="Markdown")
         bot.answer_callback_query(call.id, "خرید موفقیت‌آمیز بود!")
 
-if __name__ == '__main__':
+if name == 'main':
     init_db()
     print("⚡️ Debugged & Production-Ready AOD VPN Bot is active!")
     logging.info("Polling started...")
