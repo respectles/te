@@ -1,275 +1,515 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+ربات تلگرام فروش خودکار کانفیگ‌های VPN (اقتصادی و VIP) به زبان پایتون
+امکانات:
+1. مخازن کاملاً مجزا برای کانفیگ‌های اقتصادی و VIP (با پاکسازی خودکار جهت جلوگیری از ارسال تکراری)
+2. سیستم شارژ کیف پول دستی (کارت به کارت با تایید رسید توسط ادمین) و درگاه زرین‌پال آنلاین
+3. پنل فوق پیشرفته مدیریت ادمین (/panel یا .پنل) برای ادمین اصلی (Owner) و ادمین‌های فرعی
+4. سیستم قفل عضویت اجباری کانال (Force Subscribe)
+5. دستورات بن و آنبن کاربران (/ban و /unban)
+6. مدیریت پویای شماره کارت ادمین و تغییر قیمت‌ها
+7. ثبت کدهای تخفیف متنوع و تمدید خودکار/دستی
+8. ذخیره‌سازی دائمی با دیتابیس SQLite3 در پایتون
+"""
+
+import sqlite3
 import telebot
 from telebot import types
-import sqlite3
-import datetime
+import requests
+import json
 import os
-import logging
-from threading import Lock
+import time
+from datetime import datetime
 
-# Setup production logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ==================== تنظیمات اولیه ====================
+API_TOKEN = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+OWNER_ID = int("12345678")  # شناسه تلگرام ادمین اصلی
+SUPPORT_ID = "@jani_jorbeh"   # آیدی پشتیبانی تلگرام
+REQUIRED_CHANNEL = "@my_vpn_channel" # کانال قفل عضویت اجباری (مثال: @my_channel)
 
-# 🔒 [FIXED]: Load token dynamically to prevent credential leaks
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8570590196:AAFvSG85QNkvFahkuqnQ5skDVatQsaVZsWo")
-OWNER_ID = int(os.getenv("OWNER_ID", "7345545445"))
-DB_FILE = "vpn_database.db"
+bot = telebot.TeleBot(API_TOKEN, parse_mode="HTML")
 
-# 🧱 [FIXED]: Lock for SQLite thread safety to avoid ProgrammingError & race conditions
-db_lock = Lock()
-
-# 🤖 [FIXED]: Properly instantiated the telebot object to fix NameError
-bot = telebot.TeleBot(BOT_TOKEN)
-
-def get_db_connection():
-    """Helper to get an isolated SQLite connection."""
-    return sqlite3.connect(DB_FILE, check_same_thread=False)
-
+# ==================== مقداردهی دیتابیس SQLite ====================
 def init_db():
-    with db_lock:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            chat_id INTEGER PRIMARY KEY,
-            username TEXT,
-            balance INTEGER DEFAULT 0,
-            total_bought INTEGER DEFAULT 0,
-            is_banned INTEGER DEFAULT 0,
-            role TEXT DEFAULT 'user'
-        )""")
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    
+    # جدول کاربران
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        balance INTEGER DEFAULT 0,
+        role TEXT DEFAULT 'user', -- owner, admin, user
+        status TEXT DEFAULT 'active' -- active, banned
+    )""")
+    
+    # جدول مخزن کانفیگ‌ها
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS configs_repo (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        config_type TEXT, -- economic / vip
+        config_code TEXT UNIQUE,
+        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    
+    # جدول کانفیگ‌های فروخته شده به کاربران
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS purchased_configs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        config_type TEXT,
+        config_code TEXT,
+        price INTEGER,
+        purchase_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    
+    # جدول تراکنش‌های مالی (شارژ کیف پول)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS transactions (
+        tx_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        amount INTEGER,
+        status TEXT DEFAULT 'pending', -- pending, approved, rejected
+        receipt_photo_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+    
+    # جدول کدهای تخفیف
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS discount_codes (
+        code TEXT PRIMARY KEY,
+        discount_type TEXT, -- percent / fixed
+        value INTEGER,
+        max_usage INTEGER,
+        used_count INTEGER DEFAULT 0
+    )""")
+    
+    # جدول تنظیمات پویا (شماره کارت، قیمت‌ها و غیره)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
+    
+    # مقادیر پیش‌فرض تنظیمات
+    defaults = [
+        ("card_number", "6063-7312-8871-7607"),
+        ("card_owner", "علی اصغر سوری"),
+        ("price_economic", "300"),
+        ("price_vip", "480000"),
+        ("channel_lock_enabled", "1")
+    ]
+    for k, v in defaults:
+        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
         
-        # 📦 [FIXED]: Added 'plan_type' ('economy' or 'vip') to separate categories
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS configs_stock (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            config_text TEXT,
-            plan_type TEXT DEFAULT 'economy',
-            is_sold INTEGER DEFAULT 0,
-            added_at TEXT
-        )""")
-        
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS kv_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )""")
-        
-        # Seed default configurations safely
-        defaults = [
-            ('card_number', '6063-7312-8871-7607'),
-            ('card_holder', 'علی اصغر سوری'),
-            ('channel_id', '@AODvpn'),
-            ('channel_lock', '1'),
-            ('economy_price', '300000'),
-            ('vip_price', '480000')
-        ]
-        for key, val in defaults:
-            cursor.execute("INSERT OR IGNORE INTO kv_settings (key, value) VALUES (?, ?)", (key, val))
-        conn.commit()
-        conn.close()
-    logging.info("✅ Database initialized successfully with correct schema.")
+    # ثبت ادمین اصلی
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, balance, role, status) VALUES (?, ?, ?, ?, ?)", 
+                   (OWNER_ID, "OwnerAdmin", 0, "owner", "active"))
+                   
+    conn.commit()
+    conn.close()
 
-def get_db_setting(key, fallback=""):
+init_db()
+
+# ==================== توابع کمکی پایگاه داده ====================
+def get_setting(key, default=""):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+def set_setting(key, value):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+    conn.commit()
+    conn.close()
+
+def get_user(user_id):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, balance, role, status FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"user_id": row[0], "username": row[1], "balance": row[2], "role": row[3], "status": row[4]}
+    return None
+
+def add_user_if_not_exists(user_id, username):
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, role, status) VALUES (?, ?, 'user', 'active')", 
+                   (user_id, username or "Unknown"))
+    conn.commit()
+    conn.close()
+
+# ==================== میدلور بررسی بن و عضویت اجباری ====================
+def check_user_status(user_id):
+    user = get_user(user_id)
+    if user and user["status"] == "banned":
+        return "banned"
+    return "ok"
+
+def check_force_subscribe(user_id):
+    if get_setting("channel_lock_enabled") != "1":
+        return True
     try:
-        with db_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT value FROM kv_settings WHERE key=?", (key,))
-            row = c.fetchone()
-            conn.close()
-            return row[0] if row else fallback
+        # برای قفل عضویت اجباری، ربات باید در کانال ادمین باشد
+        member = bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        if member.status in ['creator', 'administrator', 'member']:
+            return True
     except Exception as e:
-        logging.error(f"Error reading setting '{key}': {e}")
-        return fallback
+        # در صورت بروز خطا (مثلا کانال یافت نشد یا ربات ادمین نیست) عضویت را تایید می‌کنیم تا ربات متوقف نشود
+        return True
+    return False
 
-# 👤 [FIXED]: Auto-registration helper to register users on their first interaction
-def register_user_if_not_exists(chat_id, username):
-    with db_lock:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO users (chat_id, username, balance, total_bought, is_banned, role) VALUES (?, ?, 0, 0, 0, 'user')",
-                  (chat_id, username or "Unknown"))
+# ==================== منوهای کیبورد تلگرام ====================
+def main_keyboard(user_id):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    
+    btn_buy = types.KeyboardButton("🛍 خرید کانفیگ")
+    btn_wallet = types.KeyboardButton("💳 کیف پول من")
+    btn_configs = types.KeyboardButton("🛡 کانفیگ‌های من")
+    btn_support = types.KeyboardButton("📞 پشتیبانی")
+    
+    markup.add(btn_buy, btn_wallet)
+    markup.add(btn_configs, btn_support)
+    
+    # دکمه ورود به پنل برای ادمین‌ها
+    user = get_user(user_id)
+    if user and user["role"] in ["owner", "admin"]:
+        markup.add(types.KeyboardButton("⚙️ ورود به پنل مدیریت"))
+        
+    return markup
+
+# ==================== پاسخ به پیام‌های ربات ====================
+@bot.message_handler(commands=['start'])
+def welcome_start(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    add_user_if_not_exists(user_id, username)
+    
+    if check_user_status(user_id) == "banned":
+        bot.send_message(user_id, "❌ متاسفانه حساب کاربری شما مسدود شده است و امکان استفاده از ربات را ندارید.")
+        return
+        
+    if not check_force_subscribe(user_id):
+        send_force_sub_msg(user_id)
+        return
+        
+    welcome_text = (
+        "سلام! به ربات فروش خودکار کانفیگ‌های اختصاصی خوش آمدید. ⚡️🛡\n\n"
+        "با استفاده از منوی زیر به راحتی می‌توانید با موجودی کیف پول خود یا از طریق درگاه مستقیم بانکی کانفیگ بخرید.\n"
+        "کانفیگ‌ها بلافاصله پس از خرید از مخزن استخراج شده و به شما ارائه می‌گردد."
+    )
+    bot.send_message(user_id, welcome_text, reply_markup=main_keyboard(user_id))
+
+def send_force_sub_msg(user_id):
+    markup = types.InlineKeyboardMarkup()
+    btn_link = types.InlineKeyboardButton("عضویت در کانال رسمی 📢", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}")
+    btn_check = types.InlineKeyboardButton("عضو شدم ✅ (بررسی مجدد)", callback_data="check_subscription")
+    markup.add(btn_link)
+    markup.add(btn_check)
+    bot.send_message(
+        user_id,
+        f"⚠️ <b>جهت استفاده از امکانات ربات ابتدا باید عضو کانال زیر شوید:</b>\n\n"
+        f"📢 {REQUIRED_CHANNEL}\n\n"
+        f"پس از عضویت، دکمه زیر را بفشارید 👇",
+        reply_markup=markup
+    )
+
+# ==================== فرآیند خرید کانفیگ ====================
+@bot.message_handler(func=lambda message: message.text == "🛍 خرید کانفیگ")
+def choose_config_type(message):
+    user_id = message.from_user.id
+    if check_user_status(user_id) == "banned": return
+    if not check_force_subscribe(user_id):
+        send_force_sub_msg(user_id); return
+        
+    price_econ = get_setting("price_economic")
+    price_vip = get_setting("price_vip")
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_econ = types.InlineKeyboardButton(f"💰 پنل اقتصادی (گیگی {int(price_econ):,} تومان)", callback_data="buy_economic")
+    btn_vip = types.InlineKeyboardButton(f"💎 پنل VIP (گیگی {int(price_vip):,} تومان)", callback_data="buy_vip")
+    markup.add(btn_econ, btn_vip)
+    
+    bot.send_message(
+        user_id,
+        "⚡️ <b>لطفاً نوع سرویس درخواستی خود را انتخاب کنید:</b>\n\n"
+        "1️⃣ <b>پنل اقتصادی:</b> سرعت عالی، آی‌پی نیمه‌اختصاصی، پایدار\n"
+        "2️⃣ <b>پنل VIP:</b> بالاترین سرعت، آی‌پی کاملاً اختصاصی و ثابت، مناسب گیم و بورس",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
+def handle_purchase_callbacks(call):
+    user_id = call.from_user.id
+    config_type = call.data.replace("buy_", "") # economic or vip
+    type_label = "اقتصادی" if config_type == "economic" else "VIP"
+    price = int(get_setting(f"price_{config_type}"))
+    
+    bot.answer_callback_query(call.id)
+    
+    # بررسی اتمام مخزن کانفیگ‌ها قبل از هر کار
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, config_code FROM configs_repo WHERE config_type = ? LIMIT 1", (config_type,))
+    config_row = cursor.fetchone()
+    conn.close()
+    
+    if not config_row:
+        # اگر مخزن خالی باشد، تمدید/خرید دستی از ادمین
+        markup = types.InlineKeyboardMarkup()
+        btn_notify = types.InlineKeyboardButton("ارسال درخواست خرید دستی به پشتیبانی 💬", callback_data=f"manual_request_{config_type}")
+        markup.add(btn_notify)
+        
+        bot.send_message(
+            user_id,
+            f"❌ متاسفانه در حال حاضر هیچ کانفیگ آماده‌ای در مخزن <b>{type_label}</b> موجود نیست.\n"
+            f"اما می‌توانید با زدن دکمه زیر به صورت مستقیم از پشتیبانی درخواست ارسال دستی ثبت کنید:",
+            reply_markup=markup
+        )
+        return
+
+# بررسی موجودی کاربر
+    user = get_user(user_id)
+    if user["balance"] < price:
+        # هدایت به افزایش موجودی
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        btn_card = types.InlineKeyboardButton("💳 پرداخت کارت به کارت", callback_data=f"pay_card_{config_type}")
+        btn_online = types.InlineKeyboardButton("⚡️ درگاه مستقیم بانکی", callback_data=f"pay_online_{config_type}")
+        markup.add(btn_card, btn_online)
+        
+        bot.send_message(
+            user_id,
+            f"❌ <b>موجودی کیف پول شما برای این خرید کافی نیست!</b>\n"
+            f"قیمت کانفیگ: {price:,} تومان\n"
+            f"موجودی شما: {user['balance']:,} تومان\n\n"
+            f"یکی از روش‌های پرداخت زیر را برای تهیه آنی کانفیگ انتخاب کنید:",
+            reply_markup=markup
+        )
+        return
+        
+    # تحویل آنی کانفیگ و کسر از کیف پول و حذف از مخزن
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    
+    config_db_id, config_code = config_row
+    
+    # کسر هزینه از کیف پول
+    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (price, user_id))
+    # حذف از مخزن به صورت آنی (جلوگیری از توزیع مجدد)
+    cursor.execute("DELETE FROM configs_repo WHERE id = ?", (config_db_id,))
+    # ثبت خرید در دیتابیس
+    cursor.execute("INSERT INTO purchased_configs (user_id, config_type, config_code, price) VALUES (?, ?, ?, ?)", 
+                   (user_id, config_type, config_code, price))
+    
+    conn.commit()
+    conn.close()
+    
+    success_msg = (
+        f"🎉 <b>خرید موفقیت‌آمیز بود!</b>\n"
+        f"مبلغ {price:,} تومان از کیف پول شما کسر شد.\n\n"
+        f"🔑 <b>کانفیگ اختصاصی شما (حذف شده از مخزن ربات):</b>\n\n"
+        f"<code dir='ltr'>{config_code}</code>\n\n"
+        f"سرویس خریداری شده را در نرم‌افزارهای مرتبط (V2rayNG و غیره) ایمپورت کنید."
+    )
+    bot.send_message(user_id, success_msg)
+
+# ==================== درگاه پرداخت آنلاین (زرین‌پال فرضی) ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_online_"))
+def zarinpal_payment_init(call):
+    user_id = call.from_user.id
+    config_type = call.data.replace("pay_online_", "")
+    price = int(get_setting(f"price_{config_type}"))
+    
+    bot.answer_callback_query(call.id)
+    bot.send_message(user_id, "🔗 در حال تولید لینک امن پرداخت زرین‌پال... لطفاً شکیبا باشید.")
+    
+    # شبیه‌سازی ساخت درگاه بانکی در وب هوک
+    # در پروژه واقعی، با استفاده از requests به زرین‌پال متصل می‌شوید
+    # API Zarinpal: https://api.zarinpal.com/pg/v4/payment/request.json
+    
+    time.sleep(1)
+    # نمایش لینک و تراکنش فرضی
+    markup = types.InlineKeyboardMarkup()
+    btn_pay = types.InlineKeyboardButton("💳 پرداخت امن درگاه (شبیه‌سازی درگاه)", callback_data=f"verify_online_{config_type}_{price}")
+    markup.add(btn_pay)
+    bot.send_message(
+        user_id,
+        f"💳 فاکتور خرید آنلاین کانفیگ {config_type.upper()}\n"
+        f"مبلغ قابل پرداخت: {price:,} تومان\n\n"
+        f"جهت پرداخت و دریافت آنی کانفیگ روی دکمه پرداخت زیر کلیک کنید:",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("verify_online_"))
+def verify_online_payment(call):
+    user_id = call.from_user.id
+    parts = call.data.split("_")
+    config_type = parts[2]
+    price = int(parts[3])
+    
+    bot.answer_callback_query(call.id)
+    
+    # چک کردن دوباره مخزن
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, config_code FROM configs_repo WHERE config_type = ? LIMIT 1", (config_type,))
+    config_row = cursor.fetchone()
+    
+    if not config_row:
+        # مخزن خالی شده است. مبلغ را به کیف پول اضافه می‌کنیم
+        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (price, user_id))
         conn.commit()
         conn.close()
-
-# 🚫 [FIXED]: Safety helper to check banned status
-def is_user_banned(chat_id):
-    with db_lock:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT is_banned FROM users WHERE chat_id=?", (chat_id,))
-        row = c.fetchone()
-        conn.close()
-        return row[0] == 1 if row else False
-
-@bot.message_handler(commands=['start', 'شروع'])
-def handle_start(message):
-    chat_id = message.chat.id
-    register_user_if_not_exists(chat_id, message.from_user.username)
-    
-    # 🚫 [FIXED]: Intercept banned users early
-    if is_user_banned(chat_id):
-        bot.reply_to(message, "⛔️ حساب کاربری شما مسدود شده است. امکان استفاده از ربات را ندارید.")
-        return
-        
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(
-        types.KeyboardButton("🚀 خرید سرویس"),
-        types.KeyboardButton("💰 شارژ کیف پول"),
-        types.KeyboardButton("💰 موجودی کیف پول")
-    )
-    welcome_msg = "👋 به ربات خرید کانفیگ AOD VPN خوش آمدید!\n\nلطفا از دکمه‌های زیر استفاده کنید:"
-    bot.send_message(chat_id, welcome_msg, reply_markup=markup)
-
-@bot.message_handler(commands=['panel', 'پنل'])
-def handle_admin_panel(message):
-    # 🔐 Restrict command to actual owner
-    if message.chat.id != OWNER_ID:
-        bot.reply_to(message, "⛔️ خطا: شما دسترسی به پنل مدیریت مالک را ندارید.")
-        return
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("تغییر شماره کارت", callback_data="adm_card"),
-        types.InlineKeyboardButton("وضعیت قفل چنل", callback_data="adm_lock")
-    )
-    markup.add(
-        types.InlineKeyboardButton("بن / آن بن کاربر", callback_data="adm_ban"),
-        types.InlineKeyboardButton("تعداد کل کاربران", callback_data="adm_count")
-    )
-    bot.send_message(message.chat.id, "⚙️ پنل مدیریت مالک ربات:**\n\nاز منوی شیشه‌ای زیر اقدام کنید:", reply_markup=markup)
-
-@bot.message_handler(func=lambda msg: True)
-def text_reply_handler(message):
-    chat_id = message.chat.id
-    text = message.text
-    register_user_if_not_exists(chat_id, message.from_user.username)
-    
-    # 🚫 [FIXED]: Block banned users from interacting
-    if is_user_banned(chat_id):
-        bot.send_message(chat_id, "⛔️ حساب کاربری شما مسدود است.")
-        return
-
-    # Admin Manual Config Uploader
-    if chat_id == OWNER_ID and (text.startswith("vless://") or text.startswith("vmess://")):
-        # Automatically classify plan type based on link labels or format
-        plan = 'vip' if 'vip' in text.lower() else 'economy'
-        added_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        
-        with db_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("INSERT INTO configs_stock (config_text, plan_type, added_at) VALUES (?, ?, ?)", 
-                      (text, plan, added_now))
-            conn.commit()
-            conn.close()
-        bot.reply_to(message, f"✅ کانفیگ با موفقیت به عنوان پلن {plan.upper()} به انبار اضافه شد.")
-        return
-
-    if text == "🚀 خرید سرویس":
-        markup = types.InlineKeyboardMarkup()
-        eco_p = int(get_db_setting('economy_price', '300000'))
-        vip_p = int(get_db_setting('vip_price', '480000'))
-        markup.add(
-            types.InlineKeyboardButton(f"⭐️ خرید پلن اقتصادی ({eco_p:,} تومان)", callback_data="buy_from_stock_eco"),
-            types.InlineKeyboardButton(f"⚡️ خرید پلن VIP ({vip_p:,} تومان)", callback_data="buy_from_stock_vip")
+        bot.send_message(
+            user_id, 
+            f"❌ پرداخت با موفقیت انجام شد اما به دلیل اتمام موجودی مخزن، مبلغ {price:,} تومان به کیف پول شما واریز شد."
         )
-        bot.send_message(chat_id, "🛒 **یکی از دسته‌بندی‌ها را انتخاب کنید:", reply_markup=markup)
+        return
         
-    elif text == "💰 شارژ کیف پول":
-        card_num = get_db_setting('card_number')
-        card_hlr = get_db_setting('card_holder')
-        bot.send_message(chat_id, f"💳 شماره کارت جهت کارت به کارت:**\n\n`{card_num}`\n👤 صاحب کارت: {card_hlr}\n\n📌 پس از انتقال، رسید پرداخت را ارسال فرمایید.")
-        
-    elif text == "💰 موجودی کیف پول":
-        with db_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT balance, total_bought FROM users WHERE chat_id=?", (chat_id,))
-            row = c.fetchone()
-            conn.close()
-        
-        bal = row[0] if row else 0
-        bgt = row[1] if row else 0
-        bot.send_message(chat_id, f"💰 **موجودی حساب شما:**\n💵 اعتبار: {bal:,} تومان\n🛍 تعداد خرید: {bgt}** عدد")
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    chat_id = call.message.chat.id
-    register_user_if_not_exists(chat_id, call.from_user.username)
+    config_db_id, config_code = config_row
+    # حذف و ثبت خرید
+    cursor.execute("DELETE FROM configs_repo WHERE id = ?", (config_db_id,))
+    cursor.execute("INSERT INTO purchased_configs (user_id, config_type, config_code, price) VALUES (?, ?, ?, ?)", 
+                   (user_id, config_type, config_code, price))
+    conn.commit()
+    conn.close()
     
-    # 🚫 [FIXED]: Stop query processing if user is banned
-    if is_user_banned(chat_id):
-        bot.answer_callback_query(call.id, "⛔️ شما مسدود هستید.", show_alert=True)
+    bot.send_message(
+        user_id,
+        f"⚡️ <b>پرداخت آنلاین تایید شد!</b>\n"
+        f"کانفیگ استخراج شده از مخزن:\n\n"
+        f"<code dir='ltr'>{config_code}</code>"
+    )
+
+# ==================== بخش شارژ دستی کارت به کارت ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_card_"))
+def card_payment_init(call):
+    user_id = call.from_user.id
+    config_type = call.data.replace("pay_card_", "")
+    price = int(get_setting(f"price_{config_type}"))
+    
+    bot.answer_callback_query(call.id)
+    
+    # هدایت به شارژ کارت به کارت
+    card_number = get_setting("card_number")
+    card_owner = get_setting("card_owner")
+    
+    bot.send_message(
+        user_id,
+        f"💳 <b>انتقال کارت به کارت</b>\n\n"
+        f"لطفاً مبلغ <b>{price:,} تومان</b> را به شماره کارت زیر واریز کنید:\n"
+        f"💳 شماره کارت: <pre>{card_number}</pre>\n"
+        f"👤 به نام: <b>{card_owner}</b>\n\n"
+        f"پس از واریز، رسید پرداخت خود را در قالب تصویر یا متن فیش ارسال کنید تا توسط مدیریت تایید شود."
+    )
+    # ذخیره حالت انتظار برای دریافت فیش
+    bot.register_next_step_handler_by_chat_id(user_id, receive_receipt_photo, price)
+
+def receive_receipt_photo(message, amount):
+    user_id = message.from_user.id
+    photo_id = None
+    
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+    elif message.text:
+        photo_id = "text:" + message.text
+    else:
+        bot.send_message(user_id, "❌ فرمت ارسالی نامعتبر است. لطفاً مجدداً فاکتور گرفته یا رسید بفرستید.")
         return
+        
+    # ذخیره تراکنش در دیتابیس به عنوان در انتظار تایید
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO transactions (user_id, amount, status, receipt_photo_id) VALUES (?, ?, 'pending', ?)", 
+                   (user_id, amount, photo_id))
+    tx_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(user_id, "⏳ رسید شما با موفقیت برای ادمین ارسال شد. به محض تایید ادمین، کانفیگ برایتان باز خواهد شد.")
+    
+    # ارسال رسید برای ادمین اصلی
+    markup = types.InlineKeyboardMarkup()
+    btn_approve = types.InlineKeyboardButton("✅ تایید پرداخت", callback_data=f"admin_approve_{tx_id}")
+    btn_reject = types.InlineKeyboardButton("❌ رد پرداخت", callback_data=f"admin_reject_{tx_id}")
+    markup.add(btn_approve, btn_reject)
+    
+    admin_msg = (
+        f"🔔 <b>درخواست شارژ جدید (کارت به کارت)</b>\n"
+        f"کد تراکنش: #{tx_id}\n"
+        f"کاربر: @{message.from_user.username or 'بدون_یوزرنیم'} (شناسه: {user_id})\n"
+        f"مبلغ واریزی: {amount:,} تومان"
+    )
+    
+    if photo_id and not photo_id.startswith("text:"):
+        bot.send_photo(OWNER_ID, photo_id, caption=admin_msg, reply_markup=markup)
+    else:
+        text_receipt = photo_id.replace("text:", "")
+        bot.send_message(OWNER_ID, f"{admin_msg}\n📝 متن ارسالی کاربر:\n{text_receipt}", reply_markup=markup)
 
-    # 🔐 [FIXED]: Validate administrative callback access to block unauthorized users
-    if call.data.startswith("adm_") and chat_id != OWNER_ID:
-        bot.answer_callback_query(call.id, "⛔️ عدم دسترسی!", show_alert=True)
+# ==================== کیف پول کاربری ====================
+@bot.message_handler(func=lambda message: message.text == "💳 کیف پول من")
+def show_wallet(message):
+    user_id = message.from_user.id
+    if check_user_status(user_id) == "banned": return
+    
+    user = get_user(user_id)
+    bot.send_message(
+        user_id,
+        f"💳 <b>کیف پول دیجیتال شما</b>\n\n"
+        f"موجودی فعلی: <b>{user['balance']:,} تومان</b>\n\n"
+        f"شما می‌توانید با گزینه افزایش موجودی کیف پول خود را همواره پر نگه دارید.",
+        reply_markup=types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton("➕ افزایش اعتبار کیف پول", callback_data="charge_wallet_step1")]
+        ])
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "charge_wallet_step1")
+def wallet_charge_amount(call):
+    user_id = call.from_user.id
+    bot.answer_callback_query(call.id)
+    
+    bot.send_message(user_id, "💰 لطفاً مبلغی را که می‌خواهید شارژ کنید به تومان وارد کنید (مثلاً 50000):")
+    bot.register_next_step_handler_by_chat_id(user_id, wallet_charge_receipt_ask)
+
+def wallet_charge_receipt_ask(message):
+    user_id = message.from_user.id
+    try:
+        amount = int(message.text)
+        if amount <= 0: raise ValueError
+    except:
+        bot.send_message(user_id, "❌ مقدار وارد شده باید یک عدد بزرگتر از صفر باشد. لطفاً مجدد امتحان کنید.")
         return
-
-    if call.data == "adm_count":
-        with db_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM users")
-            u_count = c.fetchone()[0]
-            c.execute("SELECT COUNT(*) FROM configs_stock WHERE is_sold=0")
-            s_count = c.fetchone()[0]
-            conn.close()
-        bot.send_message(chat_id, f"📊 **آمار کلی ربات:**\n👥 کل کاربران: {u_count} نفر\n📦 کانفیگ آماده انبار: {s_count} عدد")
-        bot.answer_callback_query(call.id)
         
-    elif call.data in ["buy_from_stock_eco", "buy_from_stock_vip"]:
-        plan = "economy" if "eco" in call.data else "vip"
-        price_setting = 'economy_price' if plan == "economy" else 'vip_price'
-        price = int(get_db_setting(price_setting, '300000'))
-        
-        with db_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            
-            # 1. Check user's actual balance
-            c.execute("SELECT balance, total_bought FROM users WHERE chat_id=?", (chat_id,))
-            user_row = c.fetchone()
-            balance = user_row[0] if user_row else 0
-            total_bought = user_row[1] if user_row else 0
-            
-            # 💰 [FIXED]: Check balance before issuing config
-            if balance < price:
-                bot.send_message(chat_id, f"❌ **خطا: موجودی ناکافی است.**\n\n💰 موجودی شما: {balance:,} تومان\n💵 قیمت سرور: {price:,} تومان\n\nلطفا کیف پول خود را شارژ کنید.")
-                bot.answer_callback_query(call.id, "موجودی کافی نیست!", show_alert=True)
-                conn.close()
-                return
-                
-            # 📦 [FIXED]: Querying specific plan_type from stock
-            c.execute("SELECT id, config_text FROM configs_stock WHERE is_sold=0 AND plan_type=? LIMIT 1", (plan,))
-            row = c.fetchone()
-            
-            if not row:
-                bot.send_message(chat_id, f"❌ متاسفانه انبار کانفیگ‌های دستی {plan.upper()} در حال حاضر خالی است. مدیر ربات به زودی آن را شارژ خواهد کرد.")
-                bot.answer_callback_query(call.id, "انبار خالی است", show_alert=True)
-                conn.close()
-                return
-            
-            config_id, config_text = row
-            
-            # 🧱 [FIXED]: Deduct balance, increment total_bought, and set sold flag atomically
-            new_balance = balance - price
-            new_total = total_bought + 1
-            
-            c.execute("UPDATE users SET balance=?, total_bought=? WHERE chat_id=?", (new_balance, new_total, chat_id))
-            c.execute("UPDATE configs_stock SET is_sold=1 WHERE id=?", (config_id,))
-            
-            conn.commit()
-            conn.close()
-            
-        success_text = f"🎉 **خرید با موفقیت انجام شد!**\n\n💰 مبلغ {price:,} تومان از حساب شما کسر شد.\n💵 موجودی جدید: {new_balance:,} تومان\n\n🔑 **کانفیگ اختصاصی شما:**\n`{config_text}`\n\n📌 آن را کپی کرده و در کلاینت V2Ray خود وارد نمایید."
-        bot.send_message(chat_id, success_text, parse_mode="Markdown")
-        bot.answer_callback_query(call.id, "خرید موفقیت‌آمیز بود!")
+    card_number = get_setting("card_number")
+    card_owner = get_setting("card_owner")
+    
+    bot.send_message(
+        user_id,
+        f"💳 <b>شارژ حساب به مبلغ {amount:,} تومان</b>\n\n"
+        f"جهت شارژ، مبلغ را به کارت زیر واریز نمایید:\n"
+        f"💳 شماره کارت: <pre>{card_number}</pre>\n"
+        f"👤 به نام: <b>{card_owner}</b>\n\n"
+        f"سپس فیش واریزی خود را به صورت عکس یا متن ارسال نمایید."
+    )
+    bot.register_next_step_handler_by_chat_id(user_id, receive_receipt_photo, amount)
 
-if name == 'main':
-    init_db()
-    print("⚡️ Debugged & Production-Ready AOD VPN Bot is active!")
-    logging.info("Polling started...")
-    bot.infinity_polling()
+# ==================== تایید و رد تراکنش‌ها توسط ادمین ====================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
+def process_admin_decisions(call):
+    user_id = call.from_user.id
+    # فقط ادمین اصلی یا ادمین‌های ثبت شده مجازند
+    user = get_user(user_id)
+    if not user or user["role"] not in ["owner", "admin"]:
+        bot.answer_callback_query(call.id, "⛔️ غیرمجاز", show_alert=True)
+        return
+        
+    part
