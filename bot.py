@@ -512,7 +512,8 @@ def process_admin_decisions(call):
         bot.answer_callback_query(call.id, "⛔️ غیرمجاز", show_alert=True)
         return
         
-    parts = call.data.split("_")action = parts[1] # approve / reject
+    parts = call.data.split("_")
+action = parts[1] # approve / reject
     tx_id = int(parts[2])
     
     conn = sqlite3.connect("bot_database.db")
