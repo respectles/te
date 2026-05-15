@@ -6,9 +6,11 @@ import sqlite3
 import datetime
 import os
 
-BOT_TOKEN = "8570590196:AAFvSG85QNkvFahkuqnQ5skDVatQsaVZsWo"
-OWNER_ID = 7345545445
+BOT_TOKEN = "8778861221:AAGRD7b9BzMIpiepKs5pcn4S6QsVetqlGm0"
+OWNER_ID = 55442211
 DB_FILE = "vpn_database.db"
+
+bot = telebot.TeleBot(BOT_TOKEN)
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
