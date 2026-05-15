@@ -10,8 +10,8 @@ from threading import Lock
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 🔒 [FIXED]: Load token dynamically to prevent credential leaks
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8778861221:AAGRD7b9BzMIpiepKs5pcn4S6QsVetqlGm0")
-OWNER_ID = int(os.getenv("OWNER_ID", "55442211"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8570590196:AAFvSG85QNkvFahkuqnQ5skDVatQsaVZsWo")
+OWNER_ID = int(os.getenv("OWNER_ID", "7345545445"))
 DB_FILE = "vpn_database.db"
 
 # 🧱 [FIXED]: Lock for SQLite thread safety to avoid ProgrammingError & race conditions
