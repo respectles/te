@@ -23,8 +23,8 @@ import time
 from datetime import datetime
 
 # ==================== تنظیمات اولیه ====================
-API_TOKEN = "8570590196:AAFvSG85QNkvFahkuqnQ5skDVatQsaVZsWo"
-OWNER_ID = int("7345545445")  # شناسه تلگرام ادمین اصلی
+API_TOKEN = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+OWNER_ID = int("12345678")  # شناسه تلگرام ادمین اصلی
 SUPPORT_ID = "@jani_jorbeh"   # آیدی پشتیبانی تلگرام
 REQUIRED_CHANNEL = "@my_vpn_channel" # کانال قفل عضویت اجباری (مثال: @my_channel)
 
@@ -276,7 +276,7 @@ def handle_purchase_callbacks(call):
         )
         return
 
-    # بررسی موجودی کاربر
+# بررسی موجودی کاربر
     user = get_user(user_id)
     if user["balance"] < price:
         # هدایت به افزایش موجودی
@@ -402,7 +402,7 @@ def card_payment_init(call):
     card_number = get_setting("card_number")
     card_owner = get_setting("card_owner")
     
-    msg = bot.send_message(
+    bot.send_message(
         user_id,
         f"💳 <b>انتقال کارت به کارت</b>\n\n"
         f"لطفاً مبلغ <b>{price:,} تومان</b> را به شماره کارت زیر واریز کنید:\n"
@@ -411,7 +411,7 @@ def card_payment_init(call):
         f"پس از واریز، رسید پرداخت خود را در قالب تصویر یا متن فیش ارسال کنید تا توسط مدیریت تایید شود."
     )
     # ذخیره حالت انتظار برای دریافت فیش
-    bot.register_next_step_handler(msg, receive_receipt_photo, price)
+    bot.register_next_step_handler_by_chat_id(user_id, receive_receipt_photo, price)
 
 def receive_receipt_photo(message, amount):
     user_id = message.from_user.id
@@ -477,8 +477,8 @@ def wallet_charge_amount(call):
     user_id = call.from_user.id
     bot.answer_callback_query(call.id)
     
-    msg = bot.send_message(user_id, "💰 لطفاً مبلغی را که می‌خواهید شارژ کنید به تومان وارد کنید (مثلاً 50000):")
-    bot.register_next_step_handler(msg, wallet_charge_receipt_ask)
+    bot.send_message(user_id, "💰 لطفاً مبلغی را که می‌خواهید شارژ کنید به تومان وارد کنید (مثلاً 50000):")
+    bot.register_next_step_handler_by_chat_id(user_id, wallet_charge_receipt_ask)
 
 def wallet_charge_receipt_ask(message):
     user_id = message.from_user.id
@@ -491,17 +491,6 @@ def wallet_charge_receipt_ask(message):
         
     card_number = get_setting("card_number")
     card_owner = get_setting("card_owner")
-    
-    msg = bot.send_message(
-        user_id,
-        f"💳 <b>شارژ حساب به مبلغ {amount:,} تومان</b>\n\n"
-        f"جهت شارژ، مبلغ را به کارت زیر واریز نمایید:\n"
-        f"💳 شماره کارت: <pre>{card_number}</pre>\n"
-        f"👤 به نام: <b>{card_owner}</b>\n\n"
-        f"سپس فیش واریزی خود را به صورت عکس یا متن ارسال نمایید."
-    )
-    bot.register_next_step_handler(msg, receive_receipt_photo, amount)
-
 # ==================== تایید و رد تراکنش‌ها توسط ادمین ====================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def process_admin_decisions(call):
@@ -546,7 +535,7 @@ def process_admin_decisions(call):
         # اطلاع رسانی به کاربر
         bot.send_message(
             target_user_id,
-            f"🎉 شارژ حساب کاربری شما تایید شد!\n"
+            f"🎉 **شارژ حساب کاربری شما تایید شد!**\n"
             f"مبلغ {amount:,} تومان به موجودی حساب شما اضافه شد."
         )
     else:
@@ -601,8 +590,7 @@ def request_renewal(call):
     bot.answer_callback_query(call.id, "درخواست تمدید برای ادمین ارسال شد ✅")
     
     # ارسال پیام تمدید به ادمین اصلی
-
-bot.send_message(
+    bot.send_message(
         OWNER_ID,
         f"🔄 <b>درخواست تمدید کانفیگ</b>\n"
         f"کاربر @{call.from_user.username or 'بدون_نام'} با شناسه عددی {user_id} درخواست تمدید کانفیگ دارد. "
@@ -616,13 +604,13 @@ def get_support_details(message):
     user_id = message.from_user.id
     if check_user_status(user_id) == "banned": return
     
-    msg = bot.send_message(
+    bot.send_message(
         user_id,
         f"👤 <b>پشتیبانی رسمی ربات:</b>\n\n"
         f"آیدی پشتیبان: {SUPPORT_ID}\n\n"
         f"همچنین می‌توانید پیام خود را به صورت مستقیم در قالب یک پیام متنی ارسال کنید تا ربات آن را به ادمین برساند."
     )
-    bot.register_next_step_handler(msg, forward_to_admin)
+    bot.register_next_step_handler_by_chat_id(user_id, forward_to_admin)
 
 def forward_to_admin(message):
     user_id = message.from_user.id
@@ -675,14 +663,14 @@ def admin_set_card_start(call):
     current_card = get_setting("card_number")
     current_owner = get_setting("card_owner")
     
-    msg = bot.send_message(
+    bot.send_message(
         user_id,
         f"💳 <b>تنظیم شماره کارت جدید</b>\n\n"
         f"شماره کارت فعلی: {current_card}\n"
         f"صاحب کارت فعلی: {current_owner}\n\n"
         f"لطفاً شماره کارت ۱۶ رقمی جدید را بدون فاصله ارسال کنید:"
     )
-    bot.register_next_step_handler(msg, admin_save_card)
+    bot.register_next_step_handler_by_chat_id(user_id, admin_save_card)
 
 def admin_save_card(message):
     user_id = message.from_user.id
@@ -690,15 +678,14 @@ def admin_save_card(message):
     
     if len(card) != 16 or not card.isdigit():
         bot.send_message(user_id, "❌ شماره کارت باید دقیقا ۱۶ رقم و فقط شامل عدد باشد. عملیات لغو شد.")
-
-return
+        return
         
     # اضافه کردن خط تیره هر ۴ رقم برای زیبایی و خوانایی
     formatted_card = f"{card[0:4]}-{card[4:8]}-{card[8:12]}-{card[12:16]}"
     set_setting("card_number", formatted_card)
     
-    msg = bot.send_message(user_id, "✅ شماره کارت ثبت شد. حالا نام صاحب کارت را ارسال نمایید:")
-    bot.register_next_step_handler(msg, admin_save_card_owner)
+    bot.send_message(user_id, "✅ شماره کارت ثبت شد. حالا نام صاحب کارت را ارسال نمایید:")
+    bot.register_next_step_handler_by_chat_id(user_id, admin_save_card_owner)
 
 def admin_save_card_owner(message):
     user_id = message.from_user.id
@@ -801,16 +788,16 @@ def admin_change_prices_start(call):
     user_id = call.from_user.id
     bot.answer_callback_query(call.id)
     
-    msg = bot.send_message(user_id, "💰 لطفاً قیمت جدید پنل اقتصادی را به تومان ارسال کنید:")
-    bot.register_next_step_handler(msg, save_price_economic)
+    bot.send_message(user_id, "💰 لطفاً قیمت جدید پنل اقتصادی را به تومان ارسال کنید:")
+    bot.register_next_step_handler_by_chat_id(user_id, save_price_economic)
 
 def save_price_economic(message):
     user_id = message.from_user.id
     try:
         price = int(message.text)
         set_setting("price_economic", price)
-        msg = bot.send_message(user_id, "💰 حالا قیمت جدید پنل VIP را به تومان بفرستید:")
-        bot.register_next_step_handler(msg, save_price_vip)
+        bot.send_message(user_id, "💰 حالا قیمت جدید پنل VIP را به تومان بفرستید:")
+        bot.register_next_step_handler_by_chat_id(user_id, save_price_vip)
     except:
         bot.send_message(user_id, "❌ نامعتبر. عملیات لغو شد.")
 
@@ -832,3 +819,13 @@ def save_price_vip(message):
 if name == "main":
     print("Bot is starting...")
     bot.infinity_polling()
+    
+    bot.send_message(
+        user_id,
+        f"💳 <b>شارژ حساب به مبلغ {amount:,} تومان</b>\n\n"
+        f"جهت شارژ، مبلغ را به کارت زیر واریز نمایید:\n"
+        f"💳 شماره کارت: <pre>{card_number}</pre>\n"
+        f"👤 به نام: <b>{card_owner}</b>\n\n"
+        f"سپس فیش واریزی خود را به صورت عکس یا متن ارسال نمایید."
+    )
+    bot.register_next_step_handler_by_chat_id(user_id, receive_receipt_photo, amount)
