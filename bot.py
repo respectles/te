@@ -23,8 +23,8 @@ import time
 from datetime import datetime
 
 # ==================== تنظیمات اولیه ====================
-API_TOKEN = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
-OWNER_ID = int("12345678")  # شناسه تلگرام ادمین اصلی
+API_TOKEN = "8570590196:AAFvSG85QNkvFahkuqnQ5skDVatQsaVZsWo"
+OWNER_ID = int("7345545445")  # شناسه تلگرام ادمین اصلی
 SUPPORT_ID = "@jani_jorbeh"   # آیدی پشتیبانی تلگرام
 REQUIRED_CHANNEL = "@my_vpn_channel" # کانال قفل عضویت اجباری (مثال: @my_channel)
 
