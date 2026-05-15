@@ -6,8 +6,8 @@ import sqlite3
 import datetime
 import os
 
-BOT_TOKEN = "8570590196:AAFvSG85QNkvFahkuqnQ5skDVatQsaVZsWo"
-OWNER_ID = 7345545445
+BOT_TOKEN = "8778861221:AAGRD7b9BzMIpiepKs5pcn4S6QsVetqlGm0"
+OWNER_ID = 55442211
 DB_FILE = "vpn_database.db"
 
 def init_db():
@@ -69,7 +69,7 @@ def handle_admin_panel(message):
         types.InlineKeyboardButton("تعداد کل کاربران", callback_data="adm_count")
     )
     markup.add(types.InlineKeyboardButton("مشاهده لیست کانفیگ دستی", callback_data="adm_add_config"))
-    bot.send_message(message.chat.id, "⚙️ **پنل مدیریت مالک ربات:**\n\nاز منوی شیشه‌ای زیر اقدام کنید:", reply_markup=markup)
+    bot.send_message(message.chat.id, "⚙️ پنل مدیریت مالک ربات:**\n\nاز منوی شیشه‌ای زیر اقدام کنید:", reply_markup=markup)
 
 @bot.message_handler(func=lambda msg: True)
 def text_reply_handler(message):
@@ -94,12 +94,13 @@ def text_reply_handler(message):
             types.InlineKeyboardButton(f"⭐️ خرید پلن اقتصادی ({eco_p} تومان)", callback_data="buy_from_stock_eco"),
             types.InlineKeyboardButton(f"⚡️ خرید پلن VIP ({vip_p} تومان)", callback_data="buy_from_stock_vip")
         )
-        bot.send_message(chat_id, "🛒 **یکی از دسته‌بندی‌ها را انتخاب کنید:**", reply_markup=markup)
+        bot.send_message(chat_id, "🛒 **یکی از دسته‌بندی‌ها را انتخاب کنید:", reply_markup=markup)
         
     elif text == "⭐️ خرید کانفیگ اقتصادی":
         eco_p = get_db_setting('economy_price', '300000')
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"🟢 تایید و کسر {eco_p} تومان از کیف پول", callback_data="buy_from_stock_eco"))
+
+markup.add(types.InlineKeyboardButton(f"🟢 تایید و کسر {eco_p} تومان از کیف پول", callback_data="buy_from_stock_eco"))
         bot.send_message(chat_id, f"📦 قیمت مصوب دیتابیس برای سرور اقتصادی: {eco_p} تومان", reply_markup=markup)
         
     elif text == "⚡️ خرید کانفیگ VIP":
@@ -147,7 +148,7 @@ def callback_handler(call):
         conn.close()
     bot.answer_callback_query(call.id)
 
-if __name__ == '__main__':
+if name == 'main':
     init_db()
     print("Python Admin Bot with dynamic pricing is ready.")
     bot.infinity_polling()
